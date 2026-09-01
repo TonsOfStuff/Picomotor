@@ -41,11 +41,19 @@ try:
     stage.move_by(axis, 200, addr)
     stage.wait_move(axis, addr)
     '''
-    axis, addr = axesMap["y"]
-    stage.move_by(axis, 0, addr)
-    axis, addr = axesMap["x"]
-    stage.move_by(axis, 200, addr)
+    print(stage.get_position(1, 1))
+    print(stage.get_position(2, 1))
+    print(stage.get_position(3, 2))
+    print(stage.get_position(1, 2))
+    print(stage.get_position(2, 2))
+    
+    stage.move_by(1, 200, 1)
+    stage.move_by(1, 200, 2)
 
+    stage.wait_move(1,1)
+    stage.wait_move(1, 2)
+
+    print("After moving:")
     print(stage.get_position(1, 1))
     print(stage.get_position(2, 1))
     print(stage.get_position(3, 2))
