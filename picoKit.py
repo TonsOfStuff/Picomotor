@@ -6,7 +6,7 @@ import traceback;
 
 from pylablib.devices import Newport
 
-# Physical motor -> (addr, axis)
+# addr, axis
 motorMap = {
     "x1": (2, 1),
     "x2": (2, 2),
@@ -26,6 +26,8 @@ class StageControlApp:
         self.stage = None
         self.moveLock = threading.Lock()
         self.isMoving = False
+
+        self.stopped = False;
 
         self.positions = {"x1": 0, "x2": 0, "x": 0, "y1": 0, "y2": 0, "y": 0, "z": 0}
 
@@ -74,9 +76,14 @@ class StageControlApp:
 
         statusText = "Status: Connected" if self.stage else "Status: Not Connected"
         self.statusVar = tk.StringVar(value=statusText)
-        ttk.Label(controlsFrame, textvariable=self.statusVar, foreground="blue", font=("Helvetica", 12, "bold")).pack(
-            anchor="e", padx=5, pady=(5, 0)
-        )
+        if (statusText == "Status: Not Connected"):
+            ttk.Label(controlsFrame, textvariable=self.statusVar, foreground="red", font=("Helvetica", 12, "bold")).pack(
+                anchor="e", padx=5, pady=(5, 0)
+            )
+        else:
+            ttk.Label(controlsFrame, textvariable=self.statusVar, foreground="blue", font=("Helvetica", 12, "bold")).pack(
+                anchor="e", padx=5, pady=(5, 0)
+            )
 
         header = ttk.Frame(controlsFrame)
         header.pack(fill=tk.X, padx=5, pady=(5, 0))
@@ -96,7 +103,7 @@ class StageControlApp:
             ttk.Label(frame, text=axisName.upper(), width=8, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
 
             stepEntry = ttk.Entry(frame, width=10)
-            stepEntry.insert(0, "200")
+            stepEntry.insert(0, "0")
             stepEntry.pack(side=tk.LEFT, padx=5)
             self.stepEntries[axisName] = stepEntry
 
@@ -125,7 +132,7 @@ class StageControlApp:
             ttk.Label(frame, text=axisName.upper(), width=8, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
 
             stepEntry = ttk.Entry(frame, width=10)
-            stepEntry.insert(0, "200")
+            stepEntry.insert(0, "0")
             stepEntry.pack(side=tk.LEFT, padx=5)
             self.stepEntries[axisName] = stepEntry
 
@@ -141,7 +148,10 @@ class StageControlApp:
             posLabel.pack(side=tk.LEFT, padx=10)
             self.positionLabels[axisName] = posLabel
 
-
+        stopFrame = ttk.Frame(controlsFrame)
+        stopFrame.pack(fill=tk.X, padx=5, pady=10)
+        stopBtn = ttk.Button(stopFrame, text="Stop Movement", width=15, command=self.stopMovement)
+        stopBtn.pack(side=tk.RIGHT, padx=5)
 
     #Prevent buttons from being clicked while a move is in progress
     def setButtonsEnabled(self, enabled):
@@ -152,6 +162,20 @@ class StageControlApp:
     def refreshPositionLabels(self):
         for axisName, label in self.positionLabels.items():
             label.config(text=f"Pos: {self.positions[axisName]}")
+
+    def stopMovement(self, immediate=False):
+        self.stopped = True;
+
+        # AB = Abort Motion immediately, ST = Stop Motion with deceleration
+        cmd = "AB" if immediate else "ST"
+        
+        for addr in [1, 2]:
+            try:
+                # Send raw command directly to the address because the built in stop function didn't work
+                self.stage.query(cmd, addr=addr)
+            except Exception as e:
+                print(f"Error sending {cmd} to controller {addr}: {e}")
+        time.sleep(0.1)
 
     def startMove(self, axisName, direction):
         if self.isMoving or self.stage is None:
@@ -172,19 +196,18 @@ class StageControlApp:
     def moveWorker(self, axisName, steps):
         try:
             with self.moveLock:
+                self.stopped = False;
                 if axisName == "x":
                     self.moveCombined("x1", "x2", steps)
                 elif axisName == "y":
                     self.moveCombined("y1", "y2", steps)
-                else:  # z moves alone
+                else:  #Moving x1, x2, y1, y2, z
                     addr, axis = motorMap[axisName]
-                    print(self.positions[axisName])
                     self.stage.move_by(axis, steps, addr)
                     self.stage.wait_move(axis, addr)
                     self.positions[axisName] = self.stage.get_position(addr=addr, axis=axis)
                     if (axisName in ["x1", "x2", "y1", "y2"]):
                         self.positions[axisName[0]] = round((self.stage.get_position(addr=motorMap["x1"][0], axis=motorMap["x1"][1]) + self.stage.get_position(addr=motorMap["x2"][0], axis=motorMap["x2"][1])) / 2) if axisName[0] == "x" else round((self.stage.get_position(addr=motorMap["y1"][0], axis=motorMap["y1"][1]) + self.stage.get_position(addr=motorMap["y2"][0], axis=motorMap["y2"][1])) / 2)
-                    print(self.positions[axisName])
         except Exception as e:
             print(f"Error moving {axisName}:", e)
 
@@ -196,9 +219,18 @@ class StageControlApp:
         addrB, axisB = motorMap[motorB]
 
 
-        # send both moves before waiting on either, so they run concurrently
+        #Moving one at a time because Picomotor 8742 "uses a single high-voltage piezo driver circuit multiplexed across its 4 channels" (Gemini)
         self.stage.move_by(axis=axisA, steps=steps, addr=addrA)
         self.stage.wait_move(axis=axisA, addr=addrA)
+
+        if (self.stopped == True): #See if stop has been pressed to avoid having to press stop twice because stop only stops until the first wait_move
+            logicalAxis = motorA[0]
+            self.positions[logicalAxis] = round((self.stage.get_position(addr=addrA, axis=axisA) + self.stage.get_position(addr=addrB, axis=axisB)) / 2)
+            self.positions[motorA] = self.stage.get_position(addr=addrA, axis=axisA)
+            self.positions[motorB] = self.stage.get_position(addr=addrB, axis=axisB)
+            self.stopped = False;
+            return;
+
         self.stage.move_by(axis=axisB, steps=steps, addr=addrB)
         self.stage.wait_move(axis=axisB, addr=addrB)
 
@@ -215,7 +247,6 @@ class StageControlApp:
         self.statusVar.set("Status: Connected")
         self.refreshPositionLabels()
 
-    # ------------------------------------------------------------------
     def onClose(self):
         if self.stage is not None:
             self.stage.close()
