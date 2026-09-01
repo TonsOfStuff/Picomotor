@@ -21,7 +21,7 @@ try:
     print("Master Controller ID:", stage.query("*IDN?", addr=1))
     print("Slave Controller ID:",  stage.query("*IDN?", addr=2))
 
-    
+    '''
     axis, addr = axesMap["x"]
     stage.move_by(axis, 200, addr)
     stage.wait_move(axis, addr)
@@ -40,14 +40,15 @@ try:
     axis, addr = axesMap["pitch"]
     stage.move_by(axis, 200, addr)
     stage.wait_move(axis, addr)
-
-    axis, addr = axesMap["yaw"]
+    '''
+    axis, addr = axesMap["y"]
+    stage.move_by(axis, 0, addr)
+    axis, addr = axesMap["x"]
     stage.move_by(axis, 200, addr)
-    stage.wait_move(axis, addr)
 
     print(stage.get_position(1, 1))
     print(stage.get_position(2, 1))
-    print(stage.get_position(3, 1))
+    print(stage.get_position(3, 2))
     print(stage.get_position(1, 2))
     print(stage.get_position(2, 2))
 

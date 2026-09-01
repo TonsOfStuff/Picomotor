@@ -1,274 +1,229 @@
-import math
 import threading
 import time
 import tkinter as tk
 from tkinter import messagebox, ttk
+import traceback;
 
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from mpl_toolkits.mplot3d import Axes3D
+from pylablib.devices import Newport
 
-try:
-    from pylablib.devices import Newport
-
-    HAS_PYLABLIB = True
-except ImportError:
-    HAS_PYLABLIB = False
-
-# Mapping: axis_name -> (addr, axis)
-AXES_MAP = {
-    "x": (1, 1),
-    "y": (2, 1),
-    "z": (3, 1),
-    "pitch": (1, 2),
-    "yaw": (2, 2),
+# Physical motor -> (addr, axis)
+motorMap = {
+    "x1": (2, 1),
+    "x2": (2, 2),
+    "y1": (1, 1),
+    "y2": (1, 2),
+    "z": (2, 3),
 }
 
 
-class Picomotor3DApp:
+class StageControlApp:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("Newport Picomotor 3D Controller")
-        self.root.geometry("700x800")
+        self.root.title("Newport Picomotor Controller")
+        self.root.geometry("400x400")
 
         self.stage = None
-        self.lock = threading.Lock()
-        self.is_moving = False
+        self.moveLock = threading.Lock()
+        self.isMoving = False
 
-        self.positions = {"x": 0, "y": 0, "z": 0, "pitch": 0, "yaw": 0}
-        self.history = {"x": [0], "y": [0], "z": [0]}
+        self.positions = {"x1": 0, "x2": 0, "x": 0, "y1": 0, "y2": 0, "y": 0, "z": 0}
 
-        self._init_hardware()
-        self._build_ui()
-        self.update_positions_from_stage()
-        self.update_plot()
+        self.connectStage()
+        self.buildUi()
+        self.refreshPositionLabels()
 
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.root.protocol("WM_DELETE_WINDOW", self.onClose)
 
-    def _init_hardware(self):
-        """Initialize connection to Newport Picomotor controller with inter-command delays."""
-        if not HAS_PYLABLIB:
-            print("pylablib module not found. Running in offline/demo mode.")
-            return
-
+    #Connecting to the Picomotor controller
+    def connectStage(self):
         try:
             print("Devices found:", Newport.get_usb_devices_number_picomotor())
-            with self.lock:
-                self.stage = Newport.Picomotor8742(conn=0)
-                time.sleep(1.0)
-                print("Master Controller ID:", self.stage.query("*IDN?", addr=1))
-                time.sleep(0.1)
-                print("Slave Controller ID:", self.stage.query("*IDN?", addr=2))
-                time.sleep(0.1)
+
+            self.stage = Newport.Picomotor8742(conn=0)
+            time.sleep(1)                   # let the controller finish booting  # clear out any stale startup banner
+
+            print("Master Controller ID:", self.stage.query("*IDN?", addr=1))
+            print("Slave Controller ID:", self.stage.query("*IDN?", addr=2))
+
+            # x/y positions come from either motor in the pair since they
+            # should always read the same value once combined moves are used
+            addr, axis = motorMap["x1"]
+            self.positions["x1"] = self.stage.get_position(addr=addr, axis=axis)
+            addr, axis = motorMap["x2"]
+            self.positions["x2"] = self.stage.get_position(addr=addr, axis=axis)
+            addr, axis = motorMap["y1"]
+            self.positions["y1"] = self.stage.get_position(addr=addr, axis=axis)
+            addr, axis = motorMap["y2"]
+            self.positions["y2"] = self.stage.get_position(addr=addr, axis=axis)
+            addr, axis = motorMap["z"]
+            self.positions["z"] = self.stage.get_position(addr=addr, axis=axis)
+
+            self.positions["x"] = round((self.positions["x1"] + self.positions["x2"]) / 2)
+            self.positions["y"] = round((self.positions["y1"] + self.positions["y2"]) / 2)
+
         except Exception as e:
-            print("Hardware initialization error:", e)
+            print("Error encountered:", e)
+            traceback.print_exc()
             self.stage = None
 
-    def _build_ui(self):
-        plot_frame = ttk.Frame(self.root)
-        plot_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
+    #TKinter UI
+    def buildUi(self):
+        controlsFrame = ttk.LabelFrame(self.root, text=" Axis Controls ")
+        controlsFrame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        self.fig = plt.figure(figsize=(5, 4))
-        self.ax = self.fig.add_subplot(111, projection="3d")
-        self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-
-        controls_frame = ttk.LabelFrame(self.root, text=" Axis Controls ")
-        controls_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
-
-        top_bar = ttk.Frame(controls_frame)
-        top_bar.pack(fill=tk.X, padx=5, pady=5)
-
-        ttk.Label(top_bar, text="Step Size:").pack(side=tk.LEFT, padx=5)
-        self.step_entry = ttk.Entry(top_bar, width=10)
-        self.step_entry.insert(0, "200")
-        self.step_entry.pack(side=tk.LEFT, padx=5)
-
-        status_text = (
-            "Status: Connected"
-            if self.stage
-            else "Status: Demo Mode (No Hardware)"
-        )
-        self.status_var = tk.StringVar(value=status_text)
-        ttk.Label(top_bar, textvariable=self.status_var, foreground="blue").pack(
-            side=tk.RIGHT, padx=5
+        statusText = "Status: Connected" if self.stage else "Status: Not Connected"
+        self.statusVar = tk.StringVar(value=statusText)
+        ttk.Label(controlsFrame, textvariable=self.statusVar, foreground="blue", font=("Helvetica", 12, "bold")).pack(
+            anchor="e", padx=5, pady=(5, 0)
         )
 
-        grid_frame = ttk.Frame(controls_frame)
-        grid_frame.pack(fill=tk.X, padx=5, pady=5)
+        header = ttk.Frame(controlsFrame)
+        header.pack(fill=tk.X, padx=5, pady=(5, 0))
+        ttk.Label(header, text="Axis", width=8, font=("Helvetica", 10, "bold")).grid(row=0, column=0)
+        ttk.Label(header, text="Step Size", width=10, font=("Helvetica", 10, "bold")).grid(row=0, column=1)
 
-        self.pos_labels = {}
-        self.motion_buttons = []
-        row = 0
-        for axis_name in ["x", "y", "z", "pitch", "yaw"]:
-            ttk.Label(
-                grid_frame,
-                text=f"{axis_name.upper()}:",
-                width=8,
-                font=("Helvetica", 10, "bold"),
-            ).grid(row=row, column=0, padx=5, pady=3, sticky="w")
+        self.stepEntries = {}
+        self.positionLabels = {}
+        self.moveButtons = []
 
-            btn_neg = ttk.Button(
-                grid_frame,
-                text=f"- {axis_name.upper()}",
-                width=8,
-                command=lambda a=axis_name: self.start_move(a, -1),
-            )
-            btn_neg.grid(row=row, column=1, padx=5, pady=3)
+        
 
-            btn_pos = ttk.Button(
-                grid_frame,
-                text=f"+ {axis_name.upper()}",
-                width=8,
-                command=lambda a=axis_name: self.start_move(a, 1),
-            )
-            btn_pos.grid(row=row, column=2, padx=5, pady=3)
+        for axisName in ["x", "y", "z"]:
+            frame = ttk.Frame(controlsFrame)
+            frame.pack(fill=tk.X, padx=5, pady=3)
 
-            self.motion_buttons.extend([btn_neg, btn_pos])
+            ttk.Label(frame, text=axisName.upper(), width=8, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
 
-            lbl = ttk.Label(grid_frame, text="Pos: 0", width=18)
-            lbl.grid(row=row, column=3, padx=10, pady=3, sticky="w")
-            self.pos_labels[axis_name] = lbl
+            stepEntry = ttk.Entry(frame, width=10)
+            stepEntry.insert(0, "200")
+            stepEntry.pack(side=tk.LEFT, padx=5)
+            self.stepEntries[axisName] = stepEntry
 
-            row += 1
+            plusBtn = ttk.Button(frame, text=f"+ {axisName.upper()}", width=8, command=lambda a=axisName: self.startMove(a, 1))
+            plusBtn.pack(side=tk.LEFT, padx=5)
 
-    def set_buttons_state(self, state):
-        for btn in self.motion_buttons:
+            minusBtn = ttk.Button(frame, text=f"- {axisName.upper()}", width=8, command=lambda a=axisName: self.startMove(a, -1))
+            minusBtn.pack(side=tk.LEFT, padx=5)
+
+            
+
+            self.moveButtons.extend([minusBtn, plusBtn])
+
+            posLabel = ttk.Label(frame, text="Pos: 0", width=14)
+            posLabel.pack(side=tk.LEFT, padx=10)
+            self.positionLabels[axisName] = posLabel
+
+        frame = ttk.Frame(controlsFrame)                        #Spacing the different controls
+        frame.pack(fill=tk.X, padx=5, pady=3)
+        ttk.Label(frame, text="").pack(side=tk.LEFT, padx=5)  
+
+        for axisName in ["x1", "x2", "y1", "y2"]:
+            frame = ttk.Frame(controlsFrame)
+            frame.pack(fill=tk.X, padx=5, pady=3)   
+
+            ttk.Label(frame, text=axisName.upper(), width=8, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
+
+            stepEntry = ttk.Entry(frame, width=10)
+            stepEntry.insert(0, "200")
+            stepEntry.pack(side=tk.LEFT, padx=5)
+            self.stepEntries[axisName] = stepEntry
+
+            plusBtn = ttk.Button(frame, text=f"+ {axisName.upper()}", width=8, command=lambda a=axisName: self.startMove(a, 1))
+            plusBtn.pack(side=tk.LEFT, padx=5)
+
+            minusBtn = ttk.Button(frame, text=f"- {axisName.upper()}", width=8, command=lambda a=axisName: self.startMove(a, -1))
+            minusBtn.pack(side=tk.LEFT, padx=5)
+
+            self.moveButtons.extend([minusBtn, plusBtn])
+            
+            posLabel = ttk.Label(frame, text="Pos: 0", width=14)
+            posLabel.pack(side=tk.LEFT, padx=10)
+            self.positionLabels[axisName] = posLabel
+
+
+
+    #Prevent buttons from being clicked while a move is in progress
+    def setButtonsEnabled(self, enabled):
+        state = "normal" if enabled else "disabled"
+        for btn in self.moveButtons:
             btn.config(state=state)
 
-    def update_positions_from_stage(self):
-        """Read positions safely with individual try/catch blocks and inter-query delays."""
-        if self.stage:
-            with self.lock:
-                for name, (addr, axis) in AXES_MAP.items():
-                    try:
-                        self.positions[name] = self.stage.get_position(
-                            axis, addr
-                        )
-                    except Exception as e:
-                        print(f"Error reading position for {name}: {e}")
-                    time.sleep(0.05)  # Let bus settle between queries
+    def refreshPositionLabels(self):
+        for axisName, label in self.positionLabels.items():
+            label.config(text=f"Pos: {self.positions[axisName]}")
 
-        for name, lbl in self.pos_labels.items():
-            lbl.config(text=f"Pos: {self.positions[name]}")
-
-    def start_move(self, axis_name, direction):
-        if self.is_moving:
+    def startMove(self, axisName, direction):
+        if self.isMoving or self.stage is None:
             return
 
         try:
-            steps = int(self.step_entry.get()) * direction
+            steps = int(self.stepEntries[axisName].get()) * direction
         except ValueError:
-            messagebox.showerror(
-                "Input Error", "Please enter a valid integer for step size."
-            )
+            messagebox.showerror("Input Error", f"Please enter a valid integer step size for {axisName}.")
             return
 
-        self.is_moving = True
-        self.set_buttons_state("disabled")
+        self.isMoving = True
+        self.setButtonsEnabled(False)
+        self.statusVar.set(f"Moving {axisName.upper()} by {steps} steps...")
 
-        threading.Thread(
-            target=self._execute_move, args=(axis_name, steps), daemon=True
-        ).start()
+        threading.Thread(target=self.moveWorker, args=(axisName, steps), daemon=True).start()
 
-    def _execute_move(self, axis_name, steps):
-        """Execute move operation safely with timing buffers."""
-        self.status_var.set(f"Moving {axis_name.upper()} by {steps} steps...")
-        addr, axis = AXES_MAP[axis_name]
-
-        if self.stage:
-            try:
-                with self.lock:
-                    time.sleep(0.05)
+    def moveWorker(self, axisName, steps):
+        try:
+            with self.moveLock:
+                if axisName == "x":
+                    self.moveCombined("x1", "x2", steps)
+                elif axisName == "y":
+                    self.moveCombined("y1", "y2", steps)
+                else:  # z moves alone
+                    addr, axis = motorMap[axisName]
+                    print(self.positions[axisName])
                     self.stage.move_by(axis, steps, addr)
+                    self.stage.wait_move(axis, addr)
+                    self.positions[axisName] = self.stage.get_position(addr=addr, axis=axis)
+                    if (axisName in ["x1", "x2", "y1", "y2"]):
+                        self.positions[axisName[0]] = round((self.stage.get_position(addr=motorMap["x1"][0], axis=motorMap["x1"][1]) + self.stage.get_position(addr=motorMap["x2"][0], axis=motorMap["x2"][1])) / 2) if axisName[0] == "x" else round((self.stage.get_position(addr=motorMap["y1"][0], axis=motorMap["y1"][1]) + self.stage.get_position(addr=motorMap["y2"][0], axis=motorMap["y2"][1])) / 2)
+                    print(self.positions[axisName])
+        except Exception as e:
+            print(f"Error moving {axisName}:", e)
 
-                    # Poll until movement finishes instead of blocking wait_move
-                    time.sleep(0.1)
-                    while self.stage.is_moving(axis, addr):
-                        time.sleep(0.05)
+        self.root.after(0, self.onMoveComplete)
 
-                    time.sleep(0.05)
-                    self.positions[axis_name] = self.stage.get_position(
-                        axis, addr
-                    )
-            except Exception as e:
-                print(f"Error moving {axis_name}:", e)
-        else:
-            time.sleep(0.2)
-            self.positions[axis_name] += steps
+    def moveCombined(self, motorA, motorB, steps):
+        """Drive a motor pair together (e.g. x1+x2) so they move as one axis."""
+        addrA, axisA = motorMap[motorA]
+        addrB, axisB = motorMap[motorB]
 
-        self.history["x"].append(self.positions["x"])
-        self.history["y"].append(self.positions["y"])
-        self.history["z"].append(self.positions["z"])
 
-        self.root.after(0, self._on_move_complete)
+        # send both moves before waiting on either, so they run concurrently
+        self.stage.move_by(axis=axisA, steps=steps, addr=addrA)
+        self.stage.wait_move(axis=axisA, addr=addrA)
+        self.stage.move_by(axis=axisB, steps=steps, addr=addrB)
+        self.stage.wait_move(axis=axisB, addr=addrB)
 
-    def _on_move_complete(self):
-        self.update_positions_from_stage()
-        self.update_plot()
-        self.is_moving = False
-        self.set_buttons_state("normal")
-        self.status_var.set(
-            "Status: Ready" if self.stage else "Status: Demo Mode (No Hardware)"
-        )
 
-    def update_plot(self):
-        self.ax.clear()
+        logicalAxis = motorA[0]
+        self.positions[logicalAxis] = round((self.stage.get_position(addr=addrA, axis=axisA) + self.stage.get_position(addr=addrB, axis=axisB)) / 2)
+        self.positions[motorA] = self.stage.get_position(addr=addrA, axis=axisA)
+        self.positions[motorB] = self.stage.get_position(addr=addrB, axis=axisB)
 
-        self.ax.plot(
-            self.history["x"],
-            self.history["y"],
-            self.history["z"],
-            color="gray",
-            linestyle="--",
-            alpha=0.5,
-            label="Path",
-        )
 
-        x, y, z = self.positions["x"], self.positions["y"], self.positions["z"]
-        self.ax.scatter([x], [y], [z], color="red", s=50, label="Stage Head")
+    def onMoveComplete(self):
+        self.isMoving = False
+        self.setButtonsEnabled(True)
+        self.statusVar.set("Status: Connected")
+        self.refreshPositionLabels()
 
-        pitch_rad = math.radians(self.positions["pitch"] / 10.0)
-        yaw_rad = math.radians(self.positions["yaw"] / 10.0)
-
-        dx = math.cos(pitch_rad) * math.cos(yaw_rad)
-        dy = math.cos(pitch_rad) * math.sin(yaw_rad)
-        dz = math.sin(pitch_rad)
-
-        self.ax.quiver(
-            x,
-            y,
-            z,
-            dx,
-            dy,
-            dz,
-            length=100,
-            color="blue",
-            normalize=True,
-            label="Pointer (Pitch/Yaw)",
-        )
-
-        self.ax.set_xlabel("X (Steps)")
-        self.ax.set_ylabel("Y (Steps)")
-        self.ax.set_zlabel("Z (Steps)")
-        self.ax.set_title("3D Stage Position & Orientation")
-        self.ax.legend(loc="upper left")
-
-        self.canvas.draw()
-
-    def on_close(self):
+    # ------------------------------------------------------------------
+    def onClose(self):
         if self.stage is not None:
-            try:
-                with self.lock:
-                    self.stage.close()
-                    print("USB connection safely closed.")
-            except Exception as e:
-                print("Error during stage close:", e)
+            self.stage.close()
+            print("USB connection safely closed.")
         self.root.destroy()
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = Picomotor3DApp(root)
+    app = StageControlApp(root)
     root.mainloop()
