@@ -6,7 +6,7 @@ import traceback;
 
 from pylablib.devices import Newport
 
-# addr, axis
+# addr, axis (Address corresponds to the controllers, axis corresponds to the motor on that controller)
 motorMap = {
     "x1": (2, 1),
     "x2": (2, 2),
@@ -15,7 +15,7 @@ motorMap = {
     "z": (2, 3),
 }
 
-
+#TKinter class
 class StageControlApp:
 
     def __init__(self, root):
@@ -24,10 +24,10 @@ class StageControlApp:
         self.root.geometry("400x400")
 
         self.stage = None
-        self.moveLock = threading.Lock()
+        self.moveLock = threading.Lock() #For multithreaded process so application doesn't freeze while moving motors
         self.isMoving = False
 
-        self.stopped = False;
+        self.stopped = False
 
         self.positions = {"x1": 0, "x2": 0, "x": 0, "y1": 0, "y2": 0, "y": 0, "z": 0}
 
@@ -43,13 +43,11 @@ class StageControlApp:
             print("Devices found:", Newport.get_usb_devices_number_picomotor())
 
             self.stage = Newport.Picomotor8742(conn=0)
-            time.sleep(1)                   # let the controller finish booting  # clear out any stale startup banner
+            time.sleep(1)              
 
             print("Master Controller ID:", self.stage.query("*IDN?", addr=1))
             print("Slave Controller ID:", self.stage.query("*IDN?", addr=2))
 
-            # x/y positions come from either motor in the pair since they
-            # should always read the same value once combined moves are used
             addr, axis = motorMap["x1"]
             self.positions["x1"] = self.stage.get_position(addr=addr, axis=axis)
             addr, axis = motorMap["x2"]
@@ -95,7 +93,7 @@ class StageControlApp:
         self.moveButtons = []
 
         
-
+        #Set up panel for XYZ movement
         for axisName in ["x", "y", "z"]:
             frame = ttk.Frame(controlsFrame)
             frame.pack(fill=tk.X, padx=5, pady=3)
@@ -125,6 +123,7 @@ class StageControlApp:
         frame.pack(fill=tk.X, padx=5, pady=3)
         ttk.Label(frame, text="").pack(side=tk.LEFT, padx=5)  
 
+        #Panel for specific x and y movements
         for axisName in ["x1", "x2", "y1", "y2"]:
             frame = ttk.Frame(controlsFrame)
             frame.pack(fill=tk.X, padx=5, pady=3)   
@@ -159,10 +158,12 @@ class StageControlApp:
         for btn in self.moveButtons:
             btn.config(state=state)
 
+    #Update position labels after moving
     def refreshPositionLabels(self):
         for axisName, label in self.positionLabels.items():
             label.config(text=f"Pos: {self.positions[axisName]}")
 
+    #Stop movement in case someone entered a ridiculously large step
     def stopMovement(self, immediate=False):
         self.stopped = True;
 
@@ -191,7 +192,7 @@ class StageControlApp:
         self.setButtonsEnabled(False)
         self.statusVar.set(f"Moving {axisName.upper()} by {steps} steps...")
 
-        threading.Thread(target=self.moveWorker, args=(axisName, steps), daemon=True).start()
+        threading.Thread(target=self.moveWorker, args=(axisName, steps), daemon=True).start() #Start multithreaded process
 
     def moveWorker(self, axisName, steps):
         try:
@@ -213,8 +214,7 @@ class StageControlApp:
 
         self.root.after(0, self.onMoveComplete)
 
-    def moveCombined(self, motorA, motorB, steps):
-        """Drive a motor pair together (e.g. x1+x2) so they move as one axis."""
+    def moveCombined(self, motorA, motorB, steps): #Moving two motors in one command
         addrA, axisA = motorMap[motorA]
         addrB, axisB = motorMap[motorB]
 
@@ -234,19 +234,20 @@ class StageControlApp:
         self.stage.move_by(axis=axisB, steps=steps, addr=addrB)
         self.stage.wait_move(axis=axisB, addr=addrB)
 
-
+        #Positional updates for x or y and x1/x2 or y1/y2
         logicalAxis = motorA[0]
         self.positions[logicalAxis] = round((self.stage.get_position(addr=addrA, axis=axisA) + self.stage.get_position(addr=addrB, axis=axisB)) / 2)
         self.positions[motorA] = self.stage.get_position(addr=addrA, axis=axisA)
         self.positions[motorB] = self.stage.get_position(addr=addrB, axis=axisB)
 
-
+    #Reset the UI
     def onMoveComplete(self):
         self.isMoving = False
         self.setButtonsEnabled(True)
         self.statusVar.set("Status: Connected")
         self.refreshPositionLabels()
 
+    #Close app so nothing gets stuck in the USB connection (If something does happen, unplug power supply for a few seconds)
     def onClose(self):
         if self.stage is not None:
             self.stage.close()
