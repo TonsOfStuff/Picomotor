@@ -21,7 +21,7 @@ class StageControlApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Newport Picomotor Controller")
-        self.root.geometry("450x400")
+        self.root.geometry("480x400")
 
         self.stage = None
         self.moveLock = threading.Lock() #For multithreaded process so application doesn't freeze while moving motors
@@ -64,7 +64,7 @@ class StageControlApp:
 
         except Exception as e:
             print("Error encountered:", e)
-            traceback.print_exc()
+            #traceback.print_exc()
             self.stage = None
 
     #TKinter UI
@@ -86,7 +86,7 @@ class StageControlApp:
         header = ttk.Frame(controlsFrame)
         header.pack(fill=tk.X, padx=5, pady=(5, 0))
         ttk.Label(header, text="Axis", width=8, font=("Helvetica", 10, "bold")).grid(row=0, column=0)
-        ttk.Label(header, text="Step Size", width=10, font=("Helvetica", 10, "bold")).grid(row=0, column=1)
+        ttk.Label(header, text="# of steps", width=10, font=("Helvetica", 10, "bold")).grid(row=0, column=1)
 
         self.stepEntries = {}
         self.positionLabels = {}
@@ -116,7 +116,7 @@ class StageControlApp:
 
             self.moveButtons.extend([minusBtn, plusBtn])
 
-            posLabel = ttk.Label(frame, text="Pos: 0", width=14)
+            posLabel = ttk.Label(frame, text="Pos (steps): 0", width=14)
             posLabel.pack(side=tk.LEFT, padx=10)
             self.positionLabels[axisName] = posLabel
 
@@ -147,7 +147,7 @@ class StageControlApp:
 
             self.moveButtons.extend([minusBtn, plusBtn])
             
-            posLabel = ttk.Label(frame, text="Pos: 0", width=14)
+            posLabel = ttk.Label(frame, text="Pos (steps): 0", width=14)
             posLabel.pack(side=tk.LEFT, padx=10)
             self.positionLabels[axisName] = posLabel
 
@@ -165,7 +165,7 @@ class StageControlApp:
     #Update position labels after moving
     def refreshPositionLabels(self):
         for axisName, label in self.positionLabels.items():
-            label.config(text=f"Pos: {self.positions[axisName]}")
+            label.config(text=f"Pos (steps): {self.positions[axisName]}")
 
     #Zero the axes for easy resets 
     def zeroAxis(self, axisName):
@@ -209,6 +209,9 @@ class StageControlApp:
 
         try:
             steps = int(self.stepEntries[axisName].get()) * direction
+            if (steps >= 5000):
+                messagebox.showerror("Input Error", f"Step size for {axisName} is too large.")
+                return
         except ValueError:
             messagebox.showerror("Input Error", f"Please enter a valid integer step size for {axisName}.")
             return
@@ -242,22 +245,26 @@ class StageControlApp:
     def moveCombined(self, motorA, motorB, steps): #Moving two motors in one command
         addrA, axisA = motorMap[motorA]
         addrB, axisB = motorMap[motorB]
-
-
+        amount = 1
+        if (steps < 0):
+            amount = -1
         #Moving one at a time because Picomotor 8742 "uses a single high-voltage piezo driver circuit multiplexed across its 4 channels" (Gemini)
-        self.stage.move_by(axis=axisA, steps=steps, addr=addrA)
-        self.stage.wait_move(axis=axisA, addr=addrA)
+        for _ in range(abs(steps)):
+            self.stage.move_by(axis=axisA, steps=amount, addr=addrA)
+            self.stage.wait_move(axis=axisA, addr=addrA)
 
-        if (self.stopped == True): #See if stop has been pressed to avoid having to press stop twice because stop only stops until the first wait_move
-            logicalAxis = motorA[0]
-            self.positions[logicalAxis] = round((self.stage.get_position(addr=addrA, axis=axisA) + self.stage.get_position(addr=addrB, axis=axisB)) / 2)
-            self.positions[motorA] = self.stage.get_position(addr=addrA, axis=axisA)
-            self.positions[motorB] = self.stage.get_position(addr=addrB, axis=axisB)
-            self.stopped = False;
-            return;
+            self.stage.move_by(axis=axisB, steps=amount, addr=addrB)
+            self.stage.wait_move(axis=axisB, addr=addrB)
 
-        self.stage.move_by(axis=axisB, steps=steps, addr=addrB)
-        self.stage.wait_move(axis=axisB, addr=addrB)
+            if (self.stopped == True): #See if stop has been pressed 
+                logicalAxis = motorA[0]
+                self.positions[logicalAxis] = round((self.stage.get_position(addr=addrA, axis=axisA) + self.stage.get_position(addr=addrB, axis=axisB)) / 2)
+                self.positions[motorA] = self.stage.get_position(addr=addrA, axis=axisA)
+                self.positions[motorB] = self.stage.get_position(addr=addrB, axis=axisB)
+                self.stopped = False;
+                break
+
+            
 
         #Positional updates for x or y and x1/x2 or y1/y2
         logicalAxis = motorA[0]
