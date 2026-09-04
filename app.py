@@ -21,7 +21,7 @@ class StageControlApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Newport Picomotor Controller")
-        self.root.geometry("400x400")
+        self.root.geometry("450x400")
 
         self.stage = None
         self.moveLock = threading.Lock() #For multithreaded process so application doesn't freeze while moving motors
@@ -111,7 +111,8 @@ class StageControlApp:
             minusBtn = ttk.Button(frame, text=f"- {axisName.upper()}", width=8, command=lambda a=axisName: self.startMove(a, -1))
             minusBtn.pack(side=tk.LEFT, padx=5)
 
-            
+            zero = ttk.Button(frame, text=f"Zero", width=8, command=lambda a=axisName: self.zeroAxis(a))
+            zero.pack(side=tk.LEFT, padx=5)
 
             self.moveButtons.extend([minusBtn, plusBtn])
 
@@ -141,6 +142,9 @@ class StageControlApp:
             minusBtn = ttk.Button(frame, text=f"- {axisName.upper()}", width=8, command=lambda a=axisName: self.startMove(a, -1))
             minusBtn.pack(side=tk.LEFT, padx=5)
 
+            zero = ttk.Button(frame, text=f"Zero", width=8, command=lambda a=axisName: self.zeroAxis(a))
+            zero.pack(side=tk.LEFT, padx=5)
+
             self.moveButtons.extend([minusBtn, plusBtn])
             
             posLabel = ttk.Label(frame, text="Pos: 0", width=14)
@@ -162,6 +166,27 @@ class StageControlApp:
     def refreshPositionLabels(self):
         for axisName, label in self.positionLabels.items():
             label.config(text=f"Pos: {self.positions[axisName]}")
+
+    #Zero the axes for easy resets 
+    def zeroAxis(self, axisName):
+        if self.stage is None:
+            return
+        try:
+            if axisName in ("x", "y"):
+                for sub in (axisName + "1", axisName + "2"):
+                    addr, axis = motorMap[sub]
+                    self.stage.set_position_reference(axis=axis, position=0, addr=addr)
+                    self.positions[sub] = 0
+                self.positions[axisName] = 0
+            else:
+                addr, axis = motorMap[axisName]
+                self.stage.set_position_reference(axis=axis, position=0, addr=addr)
+                self.positions[axisName] = 0
+                if axisName[0] in ("x", "y"):
+                    self.positions[axisName[0]] = round((self.positions[axisName[0]+"1"] + self.positions[axisName[0]+"2"]) / 2)
+        except Exception as e:
+            print(f"Error zeroing {axisName}:", e)
+        self.refreshPositionLabels()
 
     #Stop movement in case someone entered a ridiculously large step
     def stopMovement(self, immediate=False):
